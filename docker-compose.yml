@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  queue-db:
+    image: postgres:16-alpine
+    container_name: queue-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: queue_db
+      POSTGRES_USER: queue_user
+      POSTGRES_PASSWORD: change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - queue_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  queue_postgres_data:
+    driver: local
