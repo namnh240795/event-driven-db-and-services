@@ -119,39 +119,37 @@ export class QueueService {
     dto: LeaseMessageDto,
   ): Promise<QueueMessageModel | null> {
     const queue = await this.ensureQueue(queueId);
-    const now = new Date();
     const visibilitySeconds =
       dto.visibilityTimeoutSeconds ?? queue.visibility_timeout_seconds;
 
-    return this.prisma.$transaction(async (tx) => {
-      const candidate = await tx.queue_message.findFirst({
-        where: {
-          queue_id: queueId,
-          available_at: { lte: now },
-          OR: [
-            { status: $Enums.queue_message_status.QUEUED },
-            {
-              status: $Enums.queue_message_status.IN_FLIGHT,
-              locked_until: { lt: now },
-            },
-          ],
-        },
-        orderBy: [{ available_at: 'asc' }, { created_at: 'asc' }],
-      });
+    const result = await this.prisma.$transaction(async (tx) => {
+      const leased = await tx.$queryRaw<QueueMessageModel[]>`
+        WITH candidate AS (
+          SELECT id
+          FROM queue_messages
+          WHERE queue_id = ${queueId}::uuid
+            AND available_at <= NOW()
+            AND (
+              status = ${$Enums.queue_message_status.QUEUED}::queue_message_status
+              OR (status = ${$Enums.queue_message_status.IN_FLIGHT}::queue_message_status AND (locked_until IS NULL OR locked_until < NOW()))
+            )
+          ORDER BY available_at ASC, created_at ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE queue_messages qm
+        SET status = ${$Enums.queue_message_status.IN_FLIGHT}::queue_message_status,
+            locked_until = NOW() + (${visibilitySeconds}::int * INTERVAL '1 second'),
+            delivery_attempts = qm.delivery_attempts + 1
+        FROM candidate
+        WHERE qm.id = candidate.id
+        RETURNING qm.*;
+      `;
 
-      if (!candidate) {
-        return null;
-      }
-
-      return tx.queue_message.update({
-        where: { id: candidate.id },
-        data: {
-          status: $Enums.queue_message_status.IN_FLIGHT,
-          locked_until: this.addSeconds(now, visibilitySeconds),
-          delivery_attempts: { increment: 1 },
-        },
-      });
+      return leased[0] ?? null;
     });
+
+    return result;
   }
 
   async acknowledgeMessage(
