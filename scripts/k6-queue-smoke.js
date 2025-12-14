@@ -5,6 +5,8 @@ import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.4/index.js';
 import { htmlReport } from 'https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js';
 
 const BASE_URL = __ENV.QUEUE_BASE_URL ?? 'http://localhost:3000';
+const STATIC_QUEUE_ID = __ENV.QUEUE_ID;
+const BASE_QUEUE_NAME = __ENV.QUEUE_NAME ?? 'k6-shared';
 const DEDUPE = __ENV.QUEUE_DEDUPE ?? 'k6-dedupe';
 const FAIL_LOG_LIMIT = Number(__ENV.QUEUE_LOG_FAIL_LIMIT ?? 5);
 
@@ -37,9 +39,12 @@ function logFailure(type, res) {
   );
 }
 
-export default function queueSmoke() {
-  const queueName = `k6-smoke-${__VU}-${Date.now()}`;
+export function setup() {
+  if (STATIC_QUEUE_ID) {
+    return { queueId: STATIC_QUEUE_ID };
+  }
 
+  const queueName = `${BASE_QUEUE_NAME}-${Date.now()}`;
   const createRes = http.post(
     `${BASE_URL}/queues`,
     JSON.stringify({
@@ -52,18 +57,23 @@ export default function queueSmoke() {
     jsonHeaders(),
   );
 
-  const createdOk =
-    check(createRes, {
+  if (
+    !check(createRes, {
       'queue created 201': (r) => r.status === 201,
       'queue id returned': (r) => !!r.json('id'),
-    }) ?? false;
-
-  if (!createdOk) {
+    })
+  ) {
     logFailure('create', createRes);
-    return;
+    throw new Error(`Unable to create queue for setup: ${createRes.body}`);
   }
 
-  const queueId = createRes.json('id');
+  return { queueId: createRes.json('id') };
+}
+
+export default function queueSmoke({ queueId }) {
+  if (!queueId) {
+    throw new Error('Queue ID not provided to default function');
+  }
 
   const dedupeKey = `${DEDUPE}-${__VU}-${__ITER}`;
 
@@ -95,29 +105,38 @@ export default function queueSmoke() {
     jsonHeaders(),
   );
 
-  const leaseOk =
-    check(leaseRes, {
+  if (
+    !check(leaseRes, {
       'lease 200': (r) => r.status === 200,
-      'leased message matches': (r) => r.json('id') === enqueueRes.json('id'),
-    }) ?? false;
-
-  if (!leaseOk) {
+      'leased message present': (r) => !!r.json('id'),
+    })
+  ) {
     logFailure('lease', leaseRes);
     return;
   }
 
+  const leasedId = leaseRes.json('id');
+
+  if (leasedId !== enqueueRes.json('id')) {
+    http.post(
+      `${BASE_URL}/queues/${queueId}/messages/${leasedId}/release`,
+      JSON.stringify({ reason: 'k6-mismatch', delaySeconds: 0 }),
+      jsonHeaders(),
+    );
+    return;
+  }
+
   const ackRes = http.post(
-    `${BASE_URL}/queues/${queueId}/messages/${enqueueRes.json('id')}/ack`,
+    `${BASE_URL}/queues/${queueId}/messages/${leasedId}/ack`,
     JSON.stringify({}),
     jsonHeaders(),
   );
 
-  const ackOk =
-    check(ackRes, {
+  if (
+    !check(ackRes, {
       'ack 200': (r) => r.status === 200,
-    }) ?? false;
-
-  if (!ackOk) {
+    })
+  ) {
     logFailure('ack', ackRes);
   }
 

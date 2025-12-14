@@ -122,34 +122,30 @@ export class QueueService {
     const visibilitySeconds =
       dto.visibilityTimeoutSeconds ?? queue.visibility_timeout_seconds;
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const leased = await tx.$queryRaw<QueueMessageModel[]>`
-        WITH candidate AS (
-          SELECT id
-          FROM queue_messages
-          WHERE queue_id = ${queueId}::uuid
-            AND available_at <= NOW()
-            AND (
-              status = ${$Enums.queue_message_status.QUEUED}::queue_message_status
-              OR (status = ${$Enums.queue_message_status.IN_FLIGHT}::queue_message_status AND (locked_until IS NULL OR locked_until < NOW()))
-            )
-          ORDER BY available_at ASC, created_at ASC
-          LIMIT 1
-          FOR UPDATE SKIP LOCKED
-        )
-        UPDATE queue_messages qm
-        SET status = ${$Enums.queue_message_status.IN_FLIGHT}::queue_message_status,
-            locked_until = NOW() + (${visibilitySeconds}::int * INTERVAL '1 second'),
-            delivery_attempts = qm.delivery_attempts + 1
-        FROM candidate
-        WHERE qm.id = candidate.id
-        RETURNING qm.*;
-      `;
+    const leased = await this.prisma.$queryRaw<QueueMessageModel[]>`
+      WITH candidate AS (
+        SELECT id
+        FROM queue_messages
+        WHERE queue_id = ${queueId}::uuid
+          AND available_at <= NOW()
+          AND (
+            status = ${$Enums.queue_message_status.QUEUED}::queue_message_status
+            OR (status = ${$Enums.queue_message_status.IN_FLIGHT}::queue_message_status AND (locked_until IS NULL OR locked_until < NOW()))
+          )
+        ORDER BY available_at ASC, created_at ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE queue_messages qm
+      SET status = ${$Enums.queue_message_status.IN_FLIGHT}::queue_message_status,
+          locked_until = NOW() + (${visibilitySeconds}::int * INTERVAL '1 second'),
+          delivery_attempts = qm.delivery_attempts + 1
+      FROM candidate
+      WHERE qm.id = candidate.id
+      RETURNING qm.*;
+    `;
 
-      return leased[0] ?? null;
-    });
-
-    return result;
+    return leased[0] ?? null;
   }
 
   async acknowledgeMessage(

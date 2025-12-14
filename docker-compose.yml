@@ -5,6 +5,19 @@ services:
     image: postgres:16-alpine
     container_name: queue-postgres
     restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=500"
+      - "-c"
+      - "shared_buffers=512MB"
+    deploy:
+      resources:
+        limits:
+          cpus: "6.00"      # allow up to 6 CPU cores
+          memory: 2g        # maximum memory the container can use
+        reservations:
+          memory: 1g        # keep at least this much memory available
     environment:
       POSTGRES_DB: queue_db
       POSTGRES_USER: queue_user
