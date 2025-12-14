@@ -1,0 +1,68 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum queue_message_status {
+  QUEUED
+  IN_FLIGHT
+  COMPLETED
+  DEAD_LETTERED
+
+  @@map("queue_message_status")
+}
+
+model queue {
+  id                           String         @id @default(uuid()) @db.Uuid
+  name                         String         @unique
+  deduplication_enabled        Boolean        @default(true)
+  deduplication_window_seconds Int            @default(300)
+  visibility_timeout_seconds   Int            @default(30)
+  max_delivery_attempts        Int            @default(5)
+  dead_letter_queue_id         String?        @db.Uuid
+  dead_letter_queue            queue?         @relation("queue_dead_letter", fields: [dead_letter_queue_id], references: [id])
+  source_queues                queue[]        @relation("queue_dead_letter")
+  messages                     queue_message[] @relation("queue_messages")
+  origin_messages              queue_message[] @relation("origin_queue_messages")
+  created_at                   DateTime       @default(now())
+  updated_at                   DateTime       @updatedAt
+
+  @@map("queues")
+}
+
+model queue_message {
+  id                       String              @id @default(uuid()) @db.Uuid
+  queue_id                 String              @db.Uuid
+  queue                    queue               @relation("queue_messages", fields: [queue_id], references: [id])
+  origin_queue_id          String              @db.Uuid
+  origin_queue             queue               @relation("origin_queue_messages", fields: [origin_queue_id], references: [id])
+  payload                  Json
+  deduplication_key        String?
+  deduplication_expires_at DateTime?
+  available_at             DateTime            @default(now())
+  locked_until             DateTime?
+  delivery_attempts        Int                 @default(0)
+  status                   queue_message_status @default(QUEUED)
+  last_error               String?
+  dead_letter_of_id        String?             @db.Uuid
+  dead_letter_of           queue_message?       @relation("dead_letter_chain", fields: [dead_letter_of_id], references: [id])
+  dead_letter_children     queue_message[]      @relation("dead_letter_chain")
+  dead_lettered_at         DateTime?
+  created_at               DateTime            @default(now())
+  updated_at               DateTime            @updatedAt
+
+  @@index([queue_id, status, available_at])
+  @@unique([queue_id, deduplication_key])
+  @@map("queue_messages")
+}
